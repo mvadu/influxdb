@@ -3,7 +3,6 @@
 # This is the InfluxDB build script.
 #
 # Current caveats:
-#   - Does not currently build ARM builds/packages
 #   - Does not checkout the correct commit/branch (for now, you will need to do so manually)
 #   - Has external dependencies for packaging (fpm) and uploading (boto)
 #
@@ -81,7 +80,6 @@ targets = {
 }
 
 supported_builds = {
-    # TODO(rossmcdonald): Add support for multiple GOARM values
     'darwin': [ "amd64", "386" ],
     # Windows is not currently supported in InfluxDB 0.9.5 due to use of mmap
     # 'windows': [ "amd64", "386", "arm" ],
@@ -103,17 +101,19 @@ def run(command, allow_failure=False, shell=False):
             out = subprocess.check_output(command.split(), stderr=subprocess.STDOUT)
     except subprocess.CalledProcessError as e:
         print ""
+        print ""
         print "Executed command failed!"
         print "-- Command run was: {}".format(command)
         print "-- Failure was: {}".format(e.output)
         if allow_failure:
             print "Continuing..."
-            return out
+            return None
         else:
             print ""
             print "Stopping."
             sys.exit(1)
     except OSError as e:
+        print ""
         print ""
         print "Invalid command!"
         print "-- Command run was: {}".format(command)
@@ -151,7 +151,10 @@ def get_current_branch():
     return out.strip()
 
 def get_system_arch():
-    return os.uname()[4]
+    arch = os.uname()[4]
+    if arch == "x86_64":
+        arch = "amd64"
+    return arch
 
 def get_system_platform():
     if sys.platform.startswith("linux"):
@@ -178,12 +181,12 @@ def check_path_for(b):
 
 def check_environ(build_dir = None):
     print "\nChecking environment:"
-    for v in [ "GOPATH", "GOBIN" ]:
+    for v in [ "GOPATH", "GOBIN", "GOROOT" ]:
         print "\t- {} -> {}".format(v, os.environ.get(v))
     
     cwd = os.getcwd()
     if build_dir == None and os.environ.get("GOPATH") and os.environ.get("GOPATH") not in cwd:
-        print "\n!! WARNING: Your current directory is not under your GOPATH! This probably won't work."
+        print "\n!! WARNING: Your current directory is not under your GOPATH. This may lead to build failures."
 
 def check_prereqs():
     print "\nChecking for dependencies:"
@@ -248,7 +251,8 @@ def build(version=None,
           rc=None,
           race=False,
           clean=False,
-          outdir="."):
+          outdir=".",
+          goarm_version="6"):
     print "-------------------------"
     print ""
     print "Build plan:"
@@ -259,6 +263,8 @@ def build(version=None,
     print "\t- branch: {}".format(branch)
     print "\t- platform: {}".format(platform)
     print "\t- arch: {}".format(arch)
+    if arch == 'arm' and goarm_version:
+        print "\t- ARM version: {}".format(goarm_version)
     print "\t- nightly? {}".format(str(nightly).lower())
     print "\t- race enabled? {}".format(str(race).lower())
     print ""
@@ -278,10 +284,11 @@ def build(version=None,
     for b, c in targets.iteritems():
         print "\t- Building '{}'...".format(os.path.join(outdir, b)),
         build_command = ""
-        build_command += "GOOS={} GOOARCH={} ".format(platform, arch)
-        if arch == "arm":
-            # TODO(rossmcdonald): Add GOARM variables for ARM builds
-            build_command += "GOOARM={} ".format(6)
+        build_command += "GOOS={} GOARCH={} ".format(platform, arch)
+        if arch == "arm" and goarm_version:
+            if goarm_version not in ["5", "6", "7", "arm64"]:
+                print "!! Invalid ARM build version: {}".format(goarm_version)
+            build_command += "GOARM={} ".format(goarm_version)
         build_command += "go build -o {} ".format(os.path.join(outdir, b))
         if race:
             build_command += "-race "
@@ -297,7 +304,26 @@ def build(version=None,
             build_command += "-X main.branch={} ".format(branch)
             build_command += "-X main.commit={}\" ".format(get_current_commit())
         build_command += c
-        out = run(build_command, shell=True)
+        
+        try_bootstrap = False
+        if (arch != get_system_arch() or platform != get_system_platform()) and os.environ.get("GOROOT"):
+            # If cross-compiling, enable a second pass after bootstrapping Go
+            try_bootstrap = True
+        if run(build_command, shell=True, allow_failure=try_bootstrap) == None:
+            print "!! Build encountered a failure, attempting to bootstrap before trying again..."
+            cwd = os.getcwd()
+            go_root = os.environ.get("GOROOT")
+            try:
+                os.chdir(os.path.join(go_root, "src"))
+                bootstrap_command = "GOOS={} GOARCH={} ".format(platform, arch)
+                if arch == 'arm':
+                    bootstrap_command += "GOARM={} ".format(goarm_version)
+                bootstrap_command += "$GOROOT/src/make.bash"
+                print "Bootstrapping Go for {}/{}...".format(platform, arch)
+                run(bootstrap_command, shell=True)
+            finally:
+                os.chdir(cwd)
+                run(build_command, shell=True)
         print "[ DONE ]"
     print ""
 
@@ -448,6 +474,7 @@ def print_usage():
     print "Options:"
     print "\t --outdir=<path> \n\t\t- Send build output to a specified path. Defaults to ./build."
     print "\t --arch=<arch> \n\t\t- Build for specified architecture. Acceptable values: x86_64|amd64, 386, arm, or all"
+    print "\t --goarm=<arm version> \n\t\t- Build for specified ARM version (when building for ARM). Default value is: 6"
     print "\t --platform=<platform> \n\t\t- Build for specified platform. Acceptable values: linux, windows, darwin, or all"
     print "\t --version=<version> \n\t\t- Version information to apply to build metadata. If not specified, will be pulled from repo tag."
     print "\t --commit=<commit> \n\t\t- Use specific commit for build (currently a NOOP)."
@@ -481,6 +508,7 @@ def main():
     upload = False
     test = False
     iteration = 1
+    goarm_version = "6"
     
     for arg in sys.argv[1:]:
         if '--outdir' in arg:
@@ -527,6 +555,9 @@ def main():
             clean = True
         elif '--iteration' in arg:
             iteration = arg.split("=")[1]
+        elif '--goarm' in arg:
+            # Signifies GOARM flag to pass to build command when compiling for ARM
+            goarm_version = arg.split("=")[1]
         elif '--help' in arg:
             print_usage()
             return 0
@@ -552,12 +583,14 @@ def main():
     if not branch:
         branch = get_current_branch()
     if not target_arch:
-        target_arch = get_system_arch()
+        if 'arm' in get_system_arch():
+            # Prevent uname from reporting ARM arch (eg 'armv7l')
+            target_arch = "arm"
+        else:
+            target_arch = get_system_arch()
     if not target_platform:
         target_platform = get_system_platform()
 
-    if target_arch == "x86_64":
-        target_arch = "amd64"
 
     build_output = {}
     # TODO(rossmcdonald): Prepare git repo for build (checking out correct branch/commit, etc.)
@@ -598,7 +631,8 @@ def main():
                   rc=rc,
                   race=race,
                   clean=clean,
-                  outdir=od)
+                  outdir=od,
+                  goarm_version=goarm_version)
             build_output.get(platform).update( { arch : od } )
 
     # Build packages
