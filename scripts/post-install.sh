@@ -10,9 +10,9 @@ if ! id influxdb >/dev/null 2>&1; then
 fi
 chmod a+rX $BIN_DIR/influx*
 
-mkdir -p $LOG_DIR
+test -d $LOG_DIR || mkdir -p $LOG_DIR
 chown -R -L influxdb:influxdb $LOG_DIR
-mkdir -p $DATA_DIR
+test -d $LOG_DIR || mkdir -p $DATA_DIR
 chown -R -L influxdb:influxdb $DATA_DIR
 
 test -f /etc/default/influxdb || touch /etc/default/influxdb
