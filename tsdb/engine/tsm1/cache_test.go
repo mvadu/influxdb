@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-func Test_EntriesAdd(t *testing.T) {
+func TestCache_EntriesAdd(t *testing.T) {
 	e := newEntries()
 	v1 := NewValue(time.Unix(2, 0).UTC(), 1.0)
 	v2 := NewValue(time.Unix(3, 0).UTC(), 2.0)
@@ -22,7 +22,7 @@ func Test_EntriesAdd(t *testing.T) {
 	}
 }
 
-func Test_EntriesDedupe(t *testing.T) {
+func TestCache_EntriesDedupe(t *testing.T) {
 	e := newEntries()
 	v0 := NewValue(time.Unix(4, 0).UTC(), 1.0)
 	v1 := NewValue(time.Unix(2, 0).UTC(), 2.0)
@@ -48,7 +48,7 @@ func Test_EntriesDedupe(t *testing.T) {
 	}
 }
 
-func Test_EntriesEvict(t *testing.T) {
+func TestCache_EntriesEvict(t *testing.T) {
 	e := newEntries()
 	v0 := NewValue(time.Unix(1, 0).UTC(), 1.0)
 	v1 := NewValue(time.Unix(2, 0).UTC(), 2.0)
@@ -98,7 +98,7 @@ func Test_EntriesEvict(t *testing.T) {
 	}
 }
 
-func Test_NewCache(t *testing.T) {
+func TestCache_NewCache(t *testing.T) {
 	c := NewCache(100)
 	if c == nil {
 		t.Fatalf("failed to create new cache")
@@ -118,7 +118,7 @@ func Test_NewCache(t *testing.T) {
 	}
 }
 
-func Test_CacheWrite(t *testing.T) {
+func TestCache_CacheWrite(t *testing.T) {
 	v0 := NewValue(time.Unix(1, 0).UTC(), 1.0)
 	v1 := NewValue(time.Unix(2, 0).UTC(), 2.0)
 	v2 := NewValue(time.Unix(3, 0).UTC(), 3.0)
@@ -142,7 +142,7 @@ func Test_CacheWrite(t *testing.T) {
 	}
 }
 
-func Test_CacheWriteMulti(t *testing.T) {
+func TestCache_CacheWriteMulti(t *testing.T) {
 	v0 := NewValue(time.Unix(1, 0).UTC(), 1.0)
 	v1 := NewValue(time.Unix(2, 0).UTC(), 2.0)
 	v2 := NewValue(time.Unix(3, 0).UTC(), 3.0)
@@ -163,7 +163,7 @@ func Test_CacheWriteMulti(t *testing.T) {
 	}
 }
 
-func Test_CacheValues(t *testing.T) {
+func TestCache_CacheValues(t *testing.T) {
 	v0 := NewValue(time.Unix(1, 0).UTC(), 0.0)
 	v1 := NewValue(time.Unix(2, 0).UTC(), 2.0)
 	v2 := NewValue(time.Unix(3, 0).UTC(), 3.0)
@@ -193,7 +193,7 @@ func Test_CacheValues(t *testing.T) {
 	}
 }
 
-func Test_CacheCheckpoint(t *testing.T) {
+func TestCache_CacheCheckpoint(t *testing.T) {
 	v0 := NewValue(time.Unix(1, 0).UTC(), 1.0)
 
 	c := MustNewCache(1024)
@@ -212,7 +212,7 @@ func Test_CacheCheckpoint(t *testing.T) {
 	}
 }
 
-func Test_CacheWriteMemoryExceeded(t *testing.T) {
+func TestCache_CacheWriteMemoryExceeded(t *testing.T) {
 	v0 := NewValue(time.Unix(1, 0).UTC(), 1.0)
 	v1 := NewValue(time.Unix(2, 0).UTC(), 2.0)
 

@@ -37,6 +37,8 @@ type DevEngine struct {
 	RotateFileSize    uint32
 	MaxFileSize       uint32
 	MaxPointsPerBlock int
+
+	MinCacheFlushThreshold uint64
 }
 
 // NewDevEngine returns a new instance of Engine.
@@ -72,6 +74,8 @@ func NewDevEngine(path string, walPath string, opt tsdb.EngineOptions) tsdb.Engi
 		RotateFileSize:    DefaultRotateFileSize,
 		MaxFileSize:       MaxDataFileSize,
 		MaxPointsPerBlock: DefaultMaxPointsPerBlock,
+
+		MinCacheFlushThreshold: opt.Config.WALFlushMemorySizeThreshold,
 	}
 
 	return e
@@ -192,13 +196,28 @@ func (e *DevEngine) WritePoints(points []models.Point, measurementFieldsToSave m
 		}
 	}
 
+	// first try to write to the cache
+	size, err := e.Cache.WriteMulti(values)
+	if err != nil {
+		return err
+	}
+
 	id, err := e.WAL.WritePoints(values)
 	if err != nil {
 		return err
 	}
 
-	// Write data to cache for query purposes.
-	return e.Cache.WriteMulti(values, uint64(id))
+	// if we're at the minimum size threshold, grab a snapshot and write out a new tsm file
+	if size > e.MinCacheFlushThreshold {
+		snapshot := e.Cache.Snapshot()
+		go func() {
+			// TODO: write the tsm file using the snapshot
+
+			e.Cache.ClearSnapshot(snapshot)
+		}()
+	}
+
+	return nil
 }
 
 // DeleteSeries deletes the series from the engine.

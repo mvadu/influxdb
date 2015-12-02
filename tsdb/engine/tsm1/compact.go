@@ -403,7 +403,7 @@ func (m *MergeIterator) Next() bool {
 		}
 
 		if dedup {
-			m.values = Values(m.values).Deduplicate(true)
+			m.values = Values(m.values).Deduplicate()
 		}
 
 		// We need to find the index of the min and max values that are within
@@ -550,7 +550,7 @@ func NewWALKeyIterator(readers ...*WALSegmentReader) (KeyIterator, error) {
 	// sort and dedup all the points for each key.
 	for k, v := range series {
 		order = append(order, k)
-		series[k] = v.Deduplicate(true)
+		series[k] = v.Deduplicate()
 	}
 	sort.Strings(order)
 
@@ -643,7 +643,7 @@ func (k *tsmKeyIterator) Next() bool {
 				} else if values[len(values)-1].Time().Before(existing[0].Time()) {
 					k.values[key] = append(values, existing...)
 				} else {
-					k.values[key] = Values(append(existing, values...)).Deduplicate(true)
+					k.values[key] = Values(append(existing, values...)).Deduplicate()
 				}
 			}
 		}
