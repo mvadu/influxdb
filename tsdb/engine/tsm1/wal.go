@@ -72,28 +72,6 @@ type WAL struct {
 	LoggingEnabled bool
 }
 
-type SegmentStat struct {
-	Path             string
-	ID               int
-	MinTime, MaxTime time.Time
-	MinKey, MaxKey   string
-}
-
-func (s SegmentPaths) IDs() []int {
-	var ids []int
-	for _, s := range s {
-		id, err := idFromFileName(s)
-		if err != nil {
-			continue
-		}
-		ids = append(ids, id)
-	}
-	sort.Ints(ids)
-	return ids
-}
-
-type SegmentPaths []string
-
 func NewWAL(path string) *WAL {
 	return &WAL{
 		path: path,
@@ -173,7 +151,7 @@ func (l *WAL) WritePoints(values map[string][]Value) (int, error) {
 	return id, nil
 }
 
-func (l *WAL) ClosedSegments() ([]SegmentStat, error) {
+func (l *WAL) ClosedSegments() ([]string, error) {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 	// Not loading files from disk so nothing to do
@@ -181,12 +159,27 @@ func (l *WAL) ClosedSegments() ([]SegmentStat, error) {
 		return nil, nil
 	}
 
-	var currentPath string
-	if l.currentSegmentWriter != nil {
-		currentPath = l.currentSegmentWriter.Path()
+	var currentFile string
+	if l.currentSegmentWriter == nil {
+		currentFile = l.currentSegmentWriter.Path()
 	}
 
-	return l.walStats.Stats(currentPath)
+	files, err := segmentFileNames(l.path)
+	if err != nil {
+		return nil, err
+	}
+
+	var closedFiles []string
+	for _, fn := range files {
+		// Skip the current path
+		if fn == currentFile {
+			continue
+		}
+
+		closedFiles = append(closedFiles, fn)
+	}
+
+	return closedFiles, nil
 }
 
 func (l *WAL) writeToLog(entry WALEntry) (int, error) {
@@ -204,13 +197,6 @@ func (l *WAL) writeToLog(entry WALEntry) (int, error) {
 	if err := l.rollSegment(); err != nil {
 		return -1, fmt.Errorf("error rolling WAL segment: %v", err)
 	}
-
-	l.mu.RLock()
-	// Update segment stats
-	if l.currentSegmentWriter != nil {
-		l.walStats.Update(l.currentSegmentWriter.Path(), entry)
-	}
-	defer l.mu.RUnlock()
 
 	if err := l.currentSegmentWriter.Write(entry); err != nil {
 		return -1, fmt.Errorf("error writing WAL entry: %v", err)

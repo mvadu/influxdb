@@ -54,7 +54,6 @@ func NewDevEngine(path string, walPath string, opt tsdb.EngineOptions) tsdb.Engi
 		Dir:         path,
 		MaxFileSize: maxTSMFileSize,
 		FileStore:   fs,
-		Cache:       cache,
 	}
 
 	e := &DevEngine{
@@ -67,15 +66,13 @@ func NewDevEngine(path string, walPath string, opt tsdb.EngineOptions) tsdb.Engi
 		FileStore: fs,
 		Compactor: c,
 		CompactionPlan: &DefaultPlanner{
-			WAL:       w,
 			FileStore: fs,
-			Cache:     cache,
 		},
 		RotateFileSize:    DefaultRotateFileSize,
 		MaxFileSize:       MaxDataFileSize,
 		MaxPointsPerBlock: DefaultMaxPointsPerBlock,
 
-		MinCacheFlushThreshold: opt.Config.WALFlushMemorySizeThreshold,
+		MinCacheFlushThreshold: uint64(opt.Config.WALFlushMemorySizeThreshold),
 	}
 
 	return e
@@ -188,6 +185,9 @@ func (e *DevEngine) LoadMetadataIndex(shard *tsdb.Shard, index *tsdb.DatabaseInd
 // WritePoints writes metadata and point data into the engine.
 // Returns an error if new points are added to an existing key.
 func (e *DevEngine) WritePoints(points []models.Point, measurementFieldsToSave map[string]*tsdb.MeasurementFields, seriesToCreate []*tsdb.SeriesCreate) error {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
 	values := map[string][]Value{}
 	for _, p := range points {
 		for k, v := range p.Fields() {
@@ -197,27 +197,13 @@ func (e *DevEngine) WritePoints(points []models.Point, measurementFieldsToSave m
 	}
 
 	// first try to write to the cache
-	size, err := e.Cache.WriteMulti(values)
+	err := e.Cache.WriteMulti(values)
 	if err != nil {
 		return err
 	}
 
-	id, err := e.WAL.WritePoints(values)
-	if err != nil {
-		return err
-	}
-
-	// if we're at the minimum size threshold, grab a snapshot and write out a new tsm file
-	if size > e.MinCacheFlushThreshold {
-		snapshot := e.Cache.Snapshot()
-		go func() {
-			// TODO: write the tsm file using the snapshot
-
-			e.Cache.ClearSnapshot(snapshot)
-		}()
-	}
-
-	return nil
+	_, err = e.WAL.WritePoints(values)
+	return err
 }
 
 // DeleteSeries deletes the series from the engine.
@@ -242,50 +228,83 @@ func (e *DevEngine) Begin(writable bool) (tsdb.Tx, error) {
 
 func (e *DevEngine) WriteTo(w io.Writer) (n int64, err error) { panic("not implemented") }
 
+func (e *DevEngine) writeSnapshot() error {
+	// Lock and grab the cache snapshot along with all the closed WAL
+	// filenames associated with the snapshot
+	closedFiles, snapshot, err := func() ([]string, *Cache, error) {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+
+		if err := e.WAL.CloseSegment(); err != nil {
+			return nil, nil, err
+		}
+
+		segments, err := e.WAL.ClosedSegments()
+		if err != nil {
+			return nil, nil, err
+		}
+
+		snapshot := e.Cache.Snapshot()
+
+		return segments, snapshot, nil
+	}()
+
+	if err != nil {
+		return err
+	}
+
+	// write the new snapshot files
+	newFiles, err := e.Compactor.WriteSnapshot(snapshot)
+	if err != nil {
+		return err
+	}
+
+	// update the file store with these new files
+	if err := e.FileStore.Replace(nil, newFiles); err != nil {
+		e.logger.Printf("error adding new TSM files from snapshot: %v", err)
+		return err
+	}
+
+	// clear the snapshot and the old WAL files
+	e.Cache.ClearSnapshot(snapshot)
+	for _, fn := range closedFiles {
+		os.RemoveAll(fn)
+	}
+
+	return nil
+}
+
 func (e *DevEngine) compact() {
 	for {
-		if err := e.WAL.CloseSegment(); err != nil {
-			e.logger.Printf("error rolling current WAL segment: %v", err)
-			time.Sleep(time.Second)
-			continue
+		if e.Cache.Size() > e.MinCacheFlushThreshold {
+			go e.writeSnapshot()
 		}
 
-		tsmFiles, segments, err := e.CompactionPlan.Plan()
-		if err != nil {
-			e.logger.Printf("error calculating compaction plan: %v", err)
-			time.Sleep(time.Second)
-			continue
-		}
+		tsmFiles := e.CompactionPlan.Plan()
 
-		if len(tsmFiles) == 0 && len(segments) == 0 {
+		if len(tsmFiles) == 0 {
 			time.Sleep(time.Second)
 			continue
 		}
 
 		start := time.Now()
-		e.logger.Printf("compacting %d WAL segments, %d TSM files", len(segments), len(tsmFiles))
+		e.logger.Printf("compacting %d TSM files", len(tsmFiles))
 
-		files, err := e.Compactor.Compact(tsmFiles, segments)
+		files, err := e.Compactor.Compact(tsmFiles)
 		if err != nil {
 			e.logger.Printf("error compacting WAL segments: %v", err)
 			time.Sleep(time.Second)
 			continue
 		}
 
-		if err := e.FileStore.Replace(append(tsmFiles, segments...), files); err != nil {
+		if err := e.FileStore.Replace(append(tsmFiles), files); err != nil {
 			e.logger.Printf("error replacing new TSM files: %v", err)
 			time.Sleep(time.Second)
 			continue
 		}
 
-		// Inform cache data may be evicted.
-		if len(segments) > 0 {
-			ids := SegmentPaths(segments).IDs()
-			e.Cache.SetCheckpoint(uint64(ids[len(ids)-1]))
-		}
-
-		e.logger.Printf("compacted %d segments, %d tsm into %d files in %s",
-			len(segments), len(tsmFiles), len(files), time.Since(start))
+		e.logger.Printf("compacted %d tsm into %d files in %s",
+			len(tsmFiles), len(files), time.Since(start))
 	}
 }
 
@@ -296,11 +315,6 @@ func (e *DevEngine) reloadCache() error {
 	}
 
 	for _, fn := range files {
-		id, err := idFromFileName(fn)
-		if err != nil {
-			return err
-		}
-
 		f, err := os.Open(fn)
 		if err != nil {
 			return err
@@ -319,7 +333,7 @@ func (e *DevEngine) reloadCache() error {
 
 			switch t := entry.(type) {
 			case *WriteWALEntry:
-				if err := e.Cache.WriteMulti(t.Values, uint64(id)); err != nil {
+				if err := e.Cache.WriteMulti(t.Values); err != nil {
 					return err
 				}
 			case *DeleteWALEntry:
@@ -340,7 +354,7 @@ type devTx struct {
 // Cursor returns a cursor for all cached and TSM-based data.
 func (t *devTx) Cursor(series string, fields []string, dec *tsdb.FieldCodec, ascending bool) tsdb.Cursor {
 	return &devCursor{
-		cache:     t.engine.Cache.Values(SeriesFieldKey(series, fields[0]), ascending),
+		cache:     t.engine.Cache.Values(SeriesFieldKey(series, fields[0])),
 		ascending: ascending,
 	}
 }
