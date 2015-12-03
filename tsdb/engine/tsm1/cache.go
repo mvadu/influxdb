@@ -27,13 +27,12 @@ func (e *entry) add(values []Value) {
 	// the new values being added
 	l := len(e.values)
 	if l != 0 {
-		lastValTime := e.values[0].UnixNano()
+		lastValTime := e.values[l-1].UnixNano()
 		if lastValTime >= values[0].UnixNano() {
 			e.needSort = true
 		}
 	}
 	e.values = append(e.values, values...)
-	e.size += uint64(Values(values).Size())
 
 	// if there's only one value, we know it's sorted
 	if len(values) == 1 {
@@ -73,27 +72,26 @@ func NewCache(maxSize uint64) *Cache {
 }
 
 // Write writes the set of values for the key to the cache. This function is goroutine-safe.
-// It returns the size of the cache after the write or an error if the cache has exceeded
-// its max size.
-func (c *Cache) Write(key string, values []Value) (uint64, error) {
+// It returns an error if the cache has exceeded its max size.
+func (c *Cache) Write(key string, values []Value) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	// Enough room in the cache?
 	newSize := c.size + uint64(Values(values).Size())
 	if newSize+c.flushingCachesSize > c.maxSize {
-		return newSize, ErrCacheMemoryExceeded
+		return ErrCacheMemoryExceeded
 	}
 
 	c.write(key, values)
 	c.size = newSize
 
-	return newSize, nil
+	return nil
 }
 
 // WriteMulti writes the map of keys and associated values to the cache. This function is goroutine-safe.
-// It returns the size of the cache after the write or an error if the cache has exceeded its max size.
-func (c *Cache) WriteMulti(values map[string][]Value) (newSize, error) {
+// It returns an error if the cache has exceeded its max size.
+func (c *Cache) WriteMulti(values map[string][]Value) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -105,7 +103,7 @@ func (c *Cache) WriteMulti(values map[string][]Value) (newSize, error) {
 	// Enough room in the cache?
 	newSize := c.size + uint64(totalSz)
 	if newSize+c.flushingCachesSize > c.maxSize {
-		return newSize, ErrCacheMemoryExceeded
+		return ErrCacheMemoryExceeded
 	}
 
 	for k, v := range values {
@@ -129,8 +127,17 @@ func (c *Cache) Snapshot() *Cache {
 	c.store = make(map[string]*entry)
 	c.size = 0
 
-	c.flushingCaches = append(c.flushingCachesSize, snap)
+	c.flushingCaches = append(c.flushingCaches, snapshot)
 	c.flushingCachesSize += snapshot.size
+
+	// sort the snapshot before returning it. The compactor and any queries
+	// coming in while it writes will need the values sorted
+	for _, e := range snapshot.store {
+		if e.needSort {
+			e.values = e.values.Deduplicate()
+			e.needSort = false
+		}
+	}
 
 	return snapshot
 }
@@ -155,7 +162,7 @@ func (c *Cache) ClearSnapshot(snapshot *Cache) {
 
 	// update the size if the snapshot was cleared from the flushing caches
 	if cleared {
-		c.size -= snapshot.size
+		c.flushingCachesSize -= snapshot.size
 	}
 }
 
@@ -163,7 +170,7 @@ func (c *Cache) ClearSnapshot(snapshot *Cache) {
 func (c *Cache) Size() uint64 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.size + c.flushingCachesSize
+	return c.size
 }
 
 // MaxSize returns the maximum number of bytes the cache may consume.
@@ -195,7 +202,7 @@ func (c *Cache) Values(key string) Values {
 			return nil, true
 		}
 
-		return e.values[0:len(values)], false
+		return e.values[0:len(e.values)], false
 	}()
 
 	// the values in the entry require a sort, do so with a write lock so
@@ -213,10 +220,20 @@ func (c *Cache) Values(key string) Values {
 			e.needSort = false
 
 			return e.values[0:len(e.values)]
-		}
+		}()
 	}
 
 	return values
+}
+
+// values returns the values for the key. It doesn't lock and assumes the data is
+// already sorted. Should only be used in compact.go in the CacheKeyIterator
+func (c *Cache) values(key string) Values {
+	e := c.store[key]
+	if e == nil {
+		return nil
+	}
+	return e.values
 }
 
 // write writes the set of values for the key to the cache. This function assumes
