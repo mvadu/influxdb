@@ -1,0 +1,52 @@
+version: 0.{build}
+pull_requests:
+  do_not_increment_build_number: true
+branches:
+  only:
+  - master
+
+os: Windows Server 2012 R2
+
+# Custom clone folder (variables are not expanded here).
+clone_folder: c:\gopath\src\github.com\influxdata\influxdb
+
+# Environment variables
+environment:
+  GOROOT: c:\go1.4.3
+  GOPATH: c:\gopath
+
+# Scripts that run after cloning repository
+install:
+ - cmd: >-
+    rd C:\Go /s /q
+
+    appveyor DownloadFile https://storage.googleapis.com/golang/go1.4.3.windows-amd64.zip
+
+    7z x go1.4.3.windows-amd64.zip -oC:\ >nul
+
+    mv C:\Go C:\go1.4.3
+
+    C:\go1.4.3\bin\go version
+ 
+ - set PATH=%GOROOT%\bin;%GOPATH%\bin;%PATH%
+ - echo %PATH%
+ - echo %GOPATH%
+ - cd c:\gopath\src\github.com\influxdata\influxdb
+ - go version
+ - go env
+ #- go get github.com/sparrc/gdm
+
+ # Cache go version until appveyor.yml is modified.
+cache:
+ - C:\go1.4.3 -> .appveyor.yml
+ 
+# To run your custom scripts instead of automatic MSBuild 
+build_script:
+ - go get -t -v ./...
+  
+# To run your custom scripts instead of automatic tests
+#test_script:
+ - go test -race -v ./...
+ 
+# To disable deployment
+deploy: off
