@@ -24,6 +24,7 @@ install:
  - go version
  - go env
  - go get github.com/sparrc/gdm
+ - cd c:\gopath\src\github.com\influxdata\influxdb
  - gdm restore
 
 # To run your custom scripts instead of automatic MSBuild 
