@@ -13,18 +13,18 @@ clone_folder: c:\gopath\src\github.com\influxdata\influxdb
 # Environment variables
 environment:
   GOROOT: C:\go
-  GOPATH: c:\gopath
+  GOPATH: C:\gopath
 
 # Scripts that run after cloning repository
 install:
  - set PATH=%GOROOT%\bin;%GOPATH%\bin;%PATH%
  - echo %PATH%
  - echo %GOPATH%
- - cd c:\gopath\src\github.com\influxdata\influxdb
+ - cd C:\gopath\src\github.com\influxdata\influxdb
  - go version
  - go env
  - go get github.com/sparrc/gdm
- - cd c:\gopath\src\github.com\influxdata\influxdb
+ - cd C:\gopath\src\github.com\influxdata\influxdb
  - gdm restore
 
 # To run your custom scripts instead of automatic MSBuild 
